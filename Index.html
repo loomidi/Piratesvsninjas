@@ -1,0 +1,336 @@
+jimport React, { useRef, useEffect, useState, useCallback } from 'react';
+// Paper.js will be loaded globally via CDN, so no direct import needed here
+
+// Main App Component
+const App = () => {
+  const canvasRef = useRef(null);
+  const paperScope = useRef(null); // To store the Paper.js PaperScope instance
+  const paperBoatObjectsRef = useRef(new Map()); // To store references to Paper.js Path objects
+
+  const [pirateBoats, setPirateBoats] = useState([]);
+  const [ninjaBoats, setNinjaBoats] = useState([]);
+  const [loot, setLoot] = useState([]);
+  const [battleLog, setBattleLog] = useState([]);
+  const [surpriseEvent, setSurpriseEvent] = useState(null);
+  const [battleActive, setBattleActive] = useState(false);
+  const [showMesh, setShowMesh] = useState(true); // State for Interface Mesh
+
+  // --- Utility for adding messages to battle log ---
+  // Defined early to avoid 'Cannot access before initialization' errors
+  const addBattleLog = useCallback((message) => {
+    setBattleLog(prev => [`[${new Date().toLocaleTimeString()}] ${message}`, ...prev.slice(0, 9)]); // Keep last 10 messages
+  }, []);
+
+  // --- Paper.js Setup for Origami Boats ---
+  useEffect(() => {
+    // Ensure Paper.js is loaded and accessible globally (via CDN script tag)
+    if (canvasRef.current && window.paper && !paperScope.current) {
+      // Setup Paper.js with the canvas element
+      paperScope.current = new window.paper.PaperScope();
+      paperScope.current.setup(canvasRef.current);
+
+      // Draw initial paper map (simple background)
+      const rect = new paperScope.current.Path.Rectangle(0, 0, paperScope.current.view.size.width, paperScope.current.view.size.height);
+      rect.fillColor = '#F5F5DC'; // Paper color
+      rect.sendToBack(); // Ensure it's behind other elements
+      paperScope.current.view.draw();
+    }
+
+    return () => {
+      // Clean up Paper.js project on component unmount
+      if (paperScope.current) {
+        paperScope.current.project.clear();
+        paperScope.current.remove();
+        paperScope.current = null;
+        paperBoatObjectsRef.current.clear(); // Clear cached Paper.js objects
+      }
+    };
+  }, []); // Empty dependency array means this runs once on mount
+
+  // Function to draw an origami boat (simplified shape)
+  const drawBoat = useCallback((id, type, position, color) => {
+    if (!paperScope.current) return null; // Ensure paperScope is available
+    const paper = paperScope.current; // Get the Paper.js instance
+
+    const path = new paper.Path();
+    path.fillColor = color;
+    path.strokeColor = 'black';
+    path.strokeWidth = 1;
+
+    // Define a simple boat shape
+    path.add(new paper.Point(position.x - 30, position.y + 20));
+    path.add(new paper.Point(position.x + 30, position.y + 20));
+    path.add(new paper.Point(position.x + 40, position.y));
+    path.add(new paper.Point(position.x, position.y - 30));
+    path.add(new paper.Point(position.x - 40, position.y));
+    path.closePath();
+
+    path.data = { id, type }; // Store data on the path for identification
+    paper.view.draw(); // Redraw the view after adding path
+
+    // Store the Paper.js Path object in the ref, indexed by boat ID
+    paperBoatObjectsRef.current.set(id, path);
+    return path; // Return the path for immediate use if needed, but not stored in React state
+  }, []); // No dependencies that change often, relies on paperScope.current being set up
+
+  // --- Game Logic ---
+
+  // Deploy a new boat (Pirate or Ninja)
+  const deployBoat = useCallback((type) => {
+    if (!paperScope.current) {
+      addBattleLog("Error: Paper.js not ready for deployment.");
+      return;
+    }
+
+    const newBoat = {
+      id: `${type}-${Date.now()}`,
+      type: type,
+      health: 100,
+      attack: type === 'pirate' ? 20 : 25, // Ninjas slightly stronger attack
+      position: {
+        x: Math.random() * (paperScope.current.view.size.width - 100) + 50,
+        y: Math.random() * (paperScope.current.view.size.height - 100) + 50
+      }
+    };
+
+    // Draw the boat on canvas and store its Paper.js object reference
+    const boatPath = drawBoat(
+      newBoat.id,
+      newBoat.type,
+      newBoat.position,
+      type === 'pirate' ? '#8B4513' : '#32CD32' // Brown for pirates, green for ninjas
+    );
+
+    if (boatPath) { // Only proceed if boatPath was successfully created
+        // Store only the boat data (without Paper.js object) in React state
+        if (type === 'pirate') {
+            setPirateBoats(prev => [...prev, newBoat]);
+        } else {
+            setNinjaBoats(prev => [...prev, newBoat]);
+        }
+        addBattleLog(`${type === 'pirate' ? 'A Pirate' : 'A Ninja'} boat has been deployed!`);
+    } else {
+        addBattleLog("Failed to deploy boat due to Paper.js issue.");
+    }
+  }, [drawBoat, addBattleLog]); // addBattleLog added as dependency
+
+  // Simulate a battle round
+  const initiateBattle = useCallback(() => {
+    if (battleActive) return; // Prevent multiple battles
+    setBattleActive(true);
+    addBattleLog("--- Battle Initiated! ---");
+
+    const interval = setInterval(() => {
+      // Filter active boats (health > 0)
+      const activePirates = pirateBoats.filter(b => b.health > 0);
+      const activeNinjas = ninjaBoats.filter(b => b.health > 0);
+
+      if (activePirates.length === 0 || activeNinjas.length === 0) {
+        clearInterval(interval);
+        setBattleActive(false);
+        const winner = activePirates.length > 0 ? 'Pirates' : (activeNinjas.length > 0 ? 'Ninjas' : 'No one');
+        addBattleLog(`--- Battle Concluded! ${winner} win! ---`);
+        triggerSurprise(); // Possible surprise after battle
+        return;
+      }
+
+      // Pirate attacks Ninja
+      if (activePirates.length > 0 && activeNinjas.length > 0) {
+        const attackingPirate = activePirates[Math.floor(Math.random() * activePirates.length)];
+        const targetNinja = activeNinjas[Math.floor(Math.random() * activeNinjas.length)];
+
+        const damage = Math.max(0, attackingPirate.attack - Math.floor(Math.random() * 5)); // Random variation
+        targetNinja.health = Math.max(0, targetNinja.health - damage);
+        addBattleLog(`🏴‍☠️ Pirate ${attackingPirate.id} fires at Ninja ${targetNinja.id}, dealing ${damage} damage. Ninja health: ${targetNinja.health}`);
+        addBurntEffect(targetNinja.position); // Apply burnt effect
+        if (targetNinja.health <= 0) {
+          addBattleLog(`🥋 Ninja ${targetNinja.id} has been sunk!`);
+          const pathObject = paperBoatObjectsRef.current.get(targetNinja.id);
+          if (pathObject) pathObject.remove(); // Remove from Paper.js view
+          paperBoatObjectsRef.current.delete(targetNinja.id); // Remove reference
+          setLoot(prev => [...prev, { type: 'Ninja Scroll', id: Date.now() }]); // Add loot
+        }
+      }
+
+      // Ninja attacks Pirate
+      if (activeNinjas.length > 0 && activePirates.length > 0) {
+        const attackingNinja = activeNinjas[Math.floor(Math.random() * activeNinjas.length)];
+        const targetPirate = activePirates[Math.floor(Math.random() * activePirates.length)];
+
+        const damage = Math.max(0, attackingNinja.attack - Math.floor(Math.random() * 5)); // Random variation
+        targetPirate.health = Math.max(0, targetPirate.health - damage);
+        addBattleLog(`🥋 Ninja ${attackingNinja.id} attacks Pirate ${targetPirate.id}, dealing ${damage} damage. Pirate health: ${targetPirate.health}`);
+        addBurntEffect(targetPirate.position); // Apply burnt effect
+        if (targetPirate.health <= 0) {
+          addBattleLog(`🏴‍☠️ Pirate ${targetPirate.id} has been sunk!`);
+          const pathObject = paperBoatObjectsRef.current.get(targetPirate.id);
+          if (pathObject) pathObject.remove(); // Remove from Paper.js view
+          paperBoatObjectsRef.current.delete(targetPirate.id); // Remove reference
+          setLoot(prev => [...prev, { type: 'Golden Doubloon', id: Date.now() }]); // Add loot
+        }
+      }
+
+      // Update states to trigger re-render with modified healths
+      setPirateBoats(currentPirates => [...currentPirates.map(boat => ({...boat}))]);
+      setNinjaBoats(currentNinjas => [...currentNinjas.map(boat => ({...boat}))]);
+
+    }, 1500); // Battle round every 1.5 seconds
+  }, [pirateBoats, ninjaBoats, battleActive, addBattleLog, addBurntEffect, triggerSurprise]);
+
+
+  // --- Thermodynamics & Visual Effects (Simulated Burnt Look) ---
+  const addBurntEffect = useCallback((position) => {
+    if (!paperScope.current) return;
+    const paper = paperScope.current; // Get the Paper.js instance
+
+    const burntCircle = new paper.Path.Circle(new paper.Point(position.x, position.y), 15);
+    burntCircle.fillColor = {
+      gradient: {
+        stops: [['#333', 0.1], ['#000', 0.5], ['rgba(0,0,0,0)', 1]],
+        radial: true
+      },
+      origin: burntCircle.bounds.center,
+      destination: burntCircle.bounds.right
+    };
+    burntCircle.opacity = 0.8;
+    burntCircle.blendMode = 'multiply'; // Blend to darken
+    burntCircle.strokeColor = '#444';
+    burntCircle.strokeWidth = 0.5;
+
+    // Animate opacity fading out and scaling down
+    burntCircle.tween({
+      properties: {
+        opacity: 0,
+        scaling: 2 // Scale up slightly as it fades
+      },
+      duration: 1500,
+      easing: 'easeOutQuad'
+    }).then(() => {
+      burntCircle.remove(); // Remove from canvas after animation
+      paper.view.draw();
+    });
+    paper.view.draw(); // Redraw the view after adding the burnt effect
+  }, []);
+
+  // --- Surprise.js (Conceptual) ---
+  const triggerSurprise = useCallback(() => {
+    const surprises = [
+      "A kraken rises! All boats take 10 damage!",
+      "Mysterious fog rolls in! Visibility reduced for 5 seconds.",
+      "Hidden treasure discovered! +50 gold (conceptual)!",
+      "Alliance formed! Pirates and Ninjas temporarily unite!",
+      "Warp in the spacetime fabric! A random boat teleports!"
+    ];
+    const randomSurprise = surprises[Math.floor(Math.random() * surprises.length)];
+    setSurpriseEvent(randomSurprise);
+    addBattleLog(`🚨 SURPRISE EVENT: ${randomSurprise}`);
+    // Simulate effect of surprise
+    if (randomSurprise.includes("kraken")) {
+        setPirateBoats(prev => prev.map(boat => ({...boat, health: Math.max(0, boat.health - 10)})));
+        setNinjaBoats(prev => prev.map(boat => ({...boat, health: Math.max(0, boat.health - 10)})));
+    } else if (randomSurprise.includes("teleports")) {
+        const allBoats = [...pirateBoats, ...ninjaBoats].filter(b => b.health > 0);
+        if (allBoats.length > 0) {
+            const randomBoat = allBoats[Math.floor(Math.random() * allBoats.length)];
+            const newPos = {
+                x: Math.random() * (paperScope.current.view.size.width - 100) + 50,
+                y: Math.random() * (paperScope.current.view.size.height - 100) + 50
+            };
+            randomBoat.position = newPos;
+            // Update Paper.js path position using the stored ref
+            const pathObject = paperBoatObjectsRef.current.get(randomBoat.id);
+            if (pathObject) {
+                pathObject.position = new paperScope.current.Point(newPos.x, newPos.y);
+            }
+            paperScope.current.view.draw();
+        }
+    }
+
+    setTimeout(() => setSurpriseEvent(null), 5000); // Clear surprise after 5 seconds
+  }, [addBattleLog, pirateBoats, ninjaBoats]); // Added pirateBoats, ninjaBoats to dependencies as their state is modified
+
+  // --- Render ---
+  return (
+    <div className="flex flex-col lg:flex-row min-h-screen w-full bg-gray-900 text-gray-100 p-4 rounded-xl shadow-lg">
+      {/* Toybox.js Controls & Interface Mesh */}
+      <div className="lg:w-1/4 p-4 bg-gray-800 rounded-lg shadow-inner flex flex-col space-y-4 relative overflow-hidden">
+        {showMesh && (
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-900/30 to-purple-900/30 backdrop-blur-sm z-10 flex items-center justify-center pointer-events-none">
+            <svg className="w-full h-full opacity-70" viewBox="0 0 100 100" preserveAspectRatio="none">
+              {/* Simple grid lines for mesh effect */}
+              {Array.from({ length: 10 }).map((_, i) => (
+                <line key={`h-${i}`} x1="0" y1={i * 10} x2="100" y2={i * 10} stroke="#4FD1C5" strokeWidth="0.1" />
+              ))}
+              {Array.from({ length: 10 }).map((_, i) => (
+                <line key={`v-${i}`} x1={i * 10} y1="0" x2={i * 10} y2="100" stroke="#4FD1C5" strokeWidth="0.1" />
+              ))}
+            </svg>
+            <div className="absolute text-teal-400 text-xs top-2 left-2">IPNT Mesh Active</div>
+          </div>
+        )}
+        <h2 className="text-2xl font-bold text-teal-400 mb-4 z-20">Toybox Controls</h2>
+        <div className="z-20">
+            <button
+            onClick={() => deployBoat('pirate')}
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 transform hover:scale-105 mb-2 shadow-md"
+            >
+            Deploy Pirate Ship 🏴‍☠️
+            </button>
+            <button
+            onClick={() => deployBoat('ninja')}
+            className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 transform hover:scale-105 mb-2 shadow-md"
+            >
+            Deploy Ninja Skiff 🥋
+            </button>
+            <button
+            onClick={initiateBattle}
+            disabled={battleActive || pirateBoats.length === 0 || ninjaBoats.length === 0}
+            className={`w-full font-bold py-2 px-4 rounded-lg transition duration-300 transform hover:scale-105 shadow-md ${
+                battleActive || pirateBoats.length === 0 || ninjaBoats.length === 0
+                ? 'bg-gray-500 cursor-not-allowed'
+                : 'bg-indigo-600 hover:bg-indigo-700'
+            }`}
+            >
+            {battleActive ? 'Battle Active...' : 'Initiate Battle! 🔥'}
+            </button>
+            <button
+                onClick={() => setShowMesh(!showMesh)}
+                className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 transform hover:scale-105 mt-4 shadow-md"
+            >
+                {showMesh ? 'Hide Interface Mesh' : 'Show Interface Mesh'}
+            </button>
+        </div>
+
+        <h3 className="text-xl font-bold text-blue-300 mt-6 mb-2 z-20">Loot Collected 💰</h3>
+        <ul className="list-disc list-inside text-sm text-gray-300 overflow-y-auto max-h-48 z-20">
+          {loot.length === 0 ? <p className="text-gray-400">No loot yet.</p> :
+            loot.map((item, index) => (
+              <li key={item.id + index}>{item.type}</li>
+            ))
+          }
+        </ul>
+
+        <h3 className="text-xl font-bold text-purple-300 mt-6 mb-2 z-20">Battle Log 📜</h3>
+        <div className="bg-gray-900 p-3 rounded-lg overflow-y-auto text-xs text-gray-200 z-20" style={{ height: '200px' }}>
+          {battleLog.map((entry, index) => (
+            <p key={index} className="mb-1">{entry}</p>
+          ))}
+        </div>
+      </div>
+
+      {/* Game Map / Canvas */}
+      <div className="flex-1 lg:ml-4 mt-4 lg:mt-0 bg-gray-700 rounded-lg shadow-lg relative flex items-center justify-center overflow-hidden">
+        <canvas ref={canvasRef} className="w-full h-full rounded-lg" style={{ minHeight: '300px' }}></canvas>
+        {surpriseEvent && (
+          <div className="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 rounded-lg">
+            <div className="bg-yellow-500 text-white p-6 rounded-lg text-center text-2xl font-bold shadow-xl animate-bounce">
+              💥 SURPRISE! 💥<br/>{surpriseEvent}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default App;
